@@ -28,6 +28,8 @@
         , request/2
         , notification/1
         , notification/2
+        , wait_response/2
+        , check_response/2
         ]).
 
 %%==============================================================================
@@ -40,7 +42,6 @@
 %% Defines
 %%==============================================================================
 -define(SERVER, ?MODULE).
--define(TIMEOUT, 10000).
 
 %%==============================================================================
 %% Record Definitions
@@ -82,7 +83,7 @@ notification(Method) ->
 
 -spec notification(method(), params()) -> any().
 notification(Method, Params) ->
-  gen_server:call(?SERVER, {notification, Method, Params}, ?TIMEOUT).
+  gen_server:cast(?SERVER, {notification, Method, Params}).
 
 -spec request(method()) -> any().
 request(Method) ->
@@ -90,7 +91,15 @@ request(Method) ->
 
 -spec request(method(), params()) -> any().
 request(Method, Params) ->
-  gen_server:call(?SERVER, {request, Method, Params}, ?TIMEOUT).
+  gen_server:send_request(?SERVER, {request, Method, Params}).
+
+-spec wait_response(any(), timeout()) -> {reply, any()} | timeout | {error, {any(), any()}}.
+wait_response(RequestId, Timeout) ->
+  gen_server:wait_response(RequestId, Timeout).
+
+-spec check_response(any(), any()) -> {reply, any()} | no_reply | {error, {any(), any()}}.
+check_response(Msg, RequestId) ->
+  gen_server:check_response(Msg, RequestId).
 
 %%==============================================================================
 %% gen_server Callback Functions
@@ -106,14 +115,12 @@ handle_call({start_server, RootUri}, _From, State) ->
   RootPath = binary_to_list(els_uri:path(RootUri)),
   [C|_] = filelib:wildcard(filename:join([RootPath, ".bsp", "*.json"])),
   {ok, Content} = file:read_file(C),
-  #{ argv := [Cmd|Params]
-   , env := Env0} = jsx:decode(Content, [return_maps, {labels, atom}]),
+  #{ argv := [Cmd|Params] } = jsx:decode(Content, [return_maps, {labels, atom}]),
   Executable = os:find_executable(binary_to_list(Cmd)),
   Args = [binary_to_list(P) || P <- Params],
-  Env = [{atom_to_list(K), binary_to_list(V)} || {K, V} <- maps:to_list(Env0)],
-  Opts = [{args, Args}, use_stdio, binary, {env, Env}],
-  ?LOG_INFO( "Start BSP Server [executable=~p] [args=~p] [env=~p]"
-           , [Executable, Args, Env]
+  Opts = [{args, Args}, use_stdio, binary],
+  ?LOG_INFO( "Start BSP Server [executable=~p] [args=~p]"
+           , [Executable, Args]
            ),
   Port = open_port({spawn_executable, Executable}, Opts),
   {reply, ok, State#state{port = Port}};
@@ -126,18 +133,16 @@ handle_call({request, Method, Params}, From, State) ->
   port_command(Port, Payload),
   {noreply, State#state{ request_id = RequestId + 1
                        , pending    = [{RequestId, From} | Pending]
-                       }};
-handle_call({notification, Method, Params}, _From, State) ->
+                       }}.
+
+-spec handle_cast(any(), state()) -> {noreply, state()}.
+handle_cast({notification, Method, Params}, State) ->
   ?LOG_INFO( "Sending BSP Notification [method=~p] [params=~p]"
            , [Method, Params]
            ),
   #state{port = Port} = State,
   Payload = els_protocol:notification(Method, Params),
   port_command(Port, Payload),
-  {reply, ok, State}.
-
--spec handle_cast(any(), state()) -> {noreply, state()}.
-handle_cast(_Request, State) ->
   {noreply, State}.
 
 -spec handle_info(any(), state()) -> {noreply, state()}.

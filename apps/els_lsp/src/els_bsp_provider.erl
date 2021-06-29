@@ -1,0 +1,137 @@
+-module(els_bsp_provider).
+
+-behaviour(els_provider).
+
+%% API
+-export([ start/1 ]).
+
+%% els_provider functions
+-export([ is_enabled/0
+        , init/0
+        , handle_request/2
+        , handle_info/2
+        ]).
+
+
+%%==============================================================================
+%% Includes
+%%==============================================================================
+-include("els_lsp.hrl").
+-include_lib("kernel/include/logger.hrl").
+
+%%==============================================================================
+%% Types
+%%==============================================================================
+-type state() :: #{ running := boolean()          % is the BSP server running?
+                  , root_uri := uri() | undefined % the root uri
+                  , pending := list()             % pending requests
+                  }.
+
+%%==============================================================================
+%% API
+%%==============================================================================
+-spec start(uri()) -> ok | {error, term()}.
+start(RootUri) ->
+  els_provider:handle_request(?MODULE, {start, RootUri}).
+
+%%==============================================================================
+%% els_provider functions
+%%==============================================================================
+-spec init() -> state().
+init() ->
+  #{ running  => false
+   , root_uri => undefined
+   , pending  => []
+   }.
+
+-spec is_enabled() -> true.
+is_enabled() -> true.
+
+-spec handle_request({start, uri()}, state()) -> {ok, state()}.
+handle_request({start, RootUri}, #{ running := false } = State) ->
+  ?LOG_INFO("Starting BSP server in ~p", [RootUri]),
+  ok = els_bsp_client:start_server(RootUri),
+  enqueue(initialize_bsp),
+  {ok, State#{ running => true, root_uri => RootUri }}.
+
+-spec handle_info(initialize_bsp, state()) -> state().
+handle_info(initialize_bsp, #{ running := true, root_uri := RootUri } = State) ->
+  {ok, Vsn} = application:get_key(els_lsp, vsn),
+  Params = #{ <<"displayName">>  => <<"Erlang LS BSP Client">>
+            , <<"version">>      => list_to_binary(Vsn)
+            , <<"bspVersion">>   => <<"2.0.0">>
+            , <<"rootUri">>      => RootUri
+            , <<"capabilities">> => #{ <<"languageIds">> => [<<"erlang">>] }
+            , <<"data">>         => #{}
+            },
+  request(<<"build/initialize">>, Params, State);
+handle_info({request_finished, Request, Response}, State) ->
+  handle_response(Request, Response, State);
+handle_info(Msg, State) ->
+  case check_response(Msg, State) of
+    {ok, NewState} ->
+      NewState;
+    no_reply ->
+      ?LOG_WARNING("Discarding unrecognized message: ~p", [Msg]),
+      State
+  end.
+
+%%==============================================================================
+%% Internal functions
+%%==============================================================================
+-spec request(binary(), map() | null, state()) -> state().
+request(Method, Params, #{ pending := Pending } = State) ->
+  RequestId = els_bsp_client:request(Method, Params),
+  State#{ pending => [{RequestId, {Method, Params}} | Pending] }.
+
+-spec handle_response({binary(), any()}, any(), state()) -> state().
+handle_response({<<"build/initialize">>, _Params}, Response, State) ->
+  ?LOG_INFO("BSP Server initialized: ~p", [Response]),
+  ok = els_bsp_client:notification(<<"build/initialized">>),
+  request(<<"workspace/buildTargets">>, #{}, State);
+handle_response({<<"workspace/buildTargets">>, _Params}, Response, State0) ->
+  Result = maps:get(result, Response, #{}),
+  Targets = maps:get(targets, Result, []),
+  TargetIds = lists:flatten([ maps:get(id, Target, []) || Target <- Targets ]),
+  State1 = request(<<"buildTarget/sources">>, #{ <<"targets">> => TargetIds }, State0),
+  State2 = request(<<"buildTarget/dependencySources">>, #{ <<"targets">> => TargetIds }, State1),
+  State2;
+handle_response({<<"buildTarget/sources">>, _Params}, Response, State) ->
+  Result = maps:get(result, Response, #{}),
+  Items = maps:get(items, Result, []),
+  Sources = lists:flatten([ maps:get(sources, Item, []) || Item <- Items ]),
+  SourceDirUris = lists:flatten([ maps:get(uri, Source, [])
+                                  || Source <- Sources, maps:get(kind, Source, -1) =:= 2
+                                ]),
+  SourceDirs = [ maps:get(path, uri_string:parse(Uri)) || Uri <- SourceDirUris ],
+  AppsPaths = els_config:get(apps_paths),
+  NewAppsPaths = lists:usort(SourceDirs ++ AppsPaths),
+  els_config:set(apps_paths, NewAppsPaths),
+  els_indexing:start(),
+  State;
+handle_response(Request, Response, State) ->
+  ?LOG_WARNING("Unhandled response. [request=~p] [response=~p]", [Request, Response]),
+  State.
+
+-spec check_response(any(), state()) -> {ok, state()} | no_reply.
+check_response(Msg, #{ pending := Pending } = State) ->
+  F = fun({RequestId, Request}) ->
+          case els_bsp_client:check_response(Msg, RequestId) of
+            {reply, Reply} ->
+              enqueue({request_finished, Request, Reply}),
+              false;
+            _ ->
+              true
+          end
+      end,
+  case lists:splitwith(F, Pending) of
+    {_, []} ->
+      no_reply;
+    {Left, [_Matched | Right]} ->
+      {ok, State#{ pending => Left ++ Right }}
+  end.
+
+-spec enqueue(any()) -> ok.
+enqueue(Msg) ->
+  self() ! Msg,
+  ok.

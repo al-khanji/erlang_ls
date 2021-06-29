@@ -86,21 +86,8 @@ handle_request({initialized, _Params}, State) ->
   els_distribution_server:start_distribution(NodeName),
   ?LOG_INFO("Started distribution for: [~p]", [NodeName]),
   case els_config:get(bsp_enabled) of
-    true ->
-      ok = els_bsp_client:start_server(RootUri),
-      {ok, Vsn} = application:get_key(els_lsp, vsn),
-      els_bsp_client:request(
-        <<"build/initialize">>
-          , #{ <<"displayName">>  => <<"Erlang LS BSP Client">>
-             , <<"version">>      => list_to_binary(Vsn)
-             , <<"bspVersion">>   => <<"2.0.0">>
-             , <<"rootUri">>      => RootUri
-             , <<"capabilities">> => #{ <<"languageIds">> => [<<"erlang">>] }
-             , <<"data">>         => #{}
-             }
-       );
-    false ->
-      ok
+    true ->  els_bsp_provider:start(RootUri);
+    false -> ok
   end,
   case maps:get(<<"indexingEnabled">>, InitOptions, true) of
     true  -> els_indexing:start();
