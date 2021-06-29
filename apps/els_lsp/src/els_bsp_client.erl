@@ -42,6 +42,8 @@
 %% Defines
 %%==============================================================================
 -define(SERVER, ?MODULE).
+-define(BSP_WILDCARD, "*.json").
+-define(BSP_CONF_DIR, ".bsp").
 
 %%==============================================================================
 %% Record Definitions
@@ -113,17 +115,19 @@ init([]) ->
         {noreply, state()} | {reply, any(), state()}.
 handle_call({start_server, RootUri}, _From, State) ->
   RootPath = binary_to_list(els_uri:path(RootUri)),
-  [C|_] = filelib:wildcard(filename:join([RootPath, ".bsp", "*.json"])),
-  {ok, Content} = file:read_file(C),
-  #{ argv := [Cmd|Params] } = jsx:decode(Content, [return_maps, {labels, atom}]),
-  Executable = os:find_executable(binary_to_list(Cmd)),
-  Args = [binary_to_list(P) || P <- Params],
-  Opts = [{args, Args}, use_stdio, binary],
-  ?LOG_INFO( "Start BSP Server [executable=~p] [args=~p]"
-           , [Executable, Args]
-           ),
-  Port = open_port({spawn_executable, Executable}, Opts),
-  {reply, ok, State#state{port = Port}};
+  case find_config(RootPath) of
+    undefined ->
+      {reply, {error, noconfig}, State};
+    #{ argv := [Cmd|Params] } = Config ->
+      Executable = os:find_executable(binary_to_list(Cmd)),
+      Args = [binary_to_list(P) || P <- Params],
+      Opts = [{args, Args}, use_stdio, binary],
+      ?LOG_INFO( "Start BSP Server [executable=~p] [args=~p]"
+               , [Executable, Args]
+               ),
+      Port = open_port({spawn_executable, Executable}, Opts),
+      {reply, {ok, Config}, State#state{port = Port}}
+  end;
 handle_call({request, Method, Params}, From, State) ->
   #state{port = Port, request_id = RequestId, pending = Pending} = State,
   ?LOG_INFO( "Sending BSP Request [id=~p] [method=~p] [params=~p]"
@@ -165,6 +169,36 @@ terminate(_Reason, #state{port = Port} = _State) ->
 %%==============================================================================
 %% Internal Functions
 %%==============================================================================
+-spec find_config(uri()) -> map() | undefined.
+find_config(RootDir) ->
+  Wildcard = filename:join([RootDir, ?BSP_CONF_DIR, ?BSP_WILDCARD]),
+  Candidates = filelib:wildcard(Wildcard),
+  choose_config(Candidates).
+
+-spec choose_config([file:filename()]) -> map() | undefined.
+choose_config([]) ->
+  undefined;
+choose_config([F|Fs]) ->
+  try
+    {ok, Content} = file:read_file(F),
+    Config = jsx:decode(Content, [return_maps, {labels, atom}]),
+    Languages = case Config of
+                  #{ languages := L } ->
+                    L;
+                  _ ->
+                    []
+                end,
+    case lists:member(<<"erlang">>, Languages) of
+      true ->
+        Config;
+      false ->
+        choose_config(Fs)
+    end
+  catch
+    _:_ ->
+      choose_config(Fs)
+  end.
+
 -spec handle_data(binary(), state()) -> state().
 handle_data(Data, State) ->
   #state{buffer = Buffer, pending = Pending} = State,

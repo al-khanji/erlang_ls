@@ -50,9 +50,15 @@ is_enabled() -> true.
 -spec handle_request({start, uri()}, state()) -> {ok, state()}.
 handle_request({start, RootUri}, #{ running := false } = State) ->
   ?LOG_INFO("Starting BSP server in ~p", [RootUri]),
-  ok = els_bsp_client:start_server(RootUri),
-  enqueue(initialize_bsp),
-  {ok, State#{ running => true, root_uri => RootUri }}.
+  case els_bsp_client:start_server(RootUri) of
+    {ok, Config} ->
+      ?LOG_INFO("BSP server started from config ~p", [Config]),
+      enqueue(initialize_bsp),
+      {{ok, Config}, State#{ running => true, root_uri => RootUri }};
+    {error, Reason} ->
+      ?LOG_ERROR("BSP server startup failed: ~p", [Reason]),
+      {{error, Reason}, State}
+  end.
 
 -spec handle_info(initialize_bsp, state()) -> state().
 handle_info(initialize_bsp, #{ running := true, root_uri := RootUri } = State) ->
