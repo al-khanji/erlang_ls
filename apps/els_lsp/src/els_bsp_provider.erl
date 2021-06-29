@@ -97,20 +97,25 @@ handle_response({<<"workspace/buildTargets">>, _Params}, Response, State0) ->
   State2 = request(<<"buildTarget/dependencySources">>, #{ <<"targets">> => TargetIds }, State1),
   State2;
 handle_response({<<"buildTarget/sources">>, _Params}, Response, State) ->
+  handle_sources(apps_paths, fun(Source) -> maps:get(uri, Source, []) end, Response, State);
+handle_response({<<"buildTarget/dependencySources">>, _Params}, Response, State) ->
+  handle_sources(deps_paths, fun(Source) -> Source end, Response, State);
+handle_response(Request, Response, State) ->
+  ?LOG_WARNING("Unhandled response. [request=~p] [response=~p]", [Request, Response]),
+  State.
+
+-spec handle_sources(atom(), fun((any()) -> uri()), map(), state()) -> state().
+handle_sources(ConfigKey, SourceFun, Response, State) ->
   Result = maps:get(result, Response, #{}),
   Items = maps:get(items, Result, []),
   Sources = lists:flatten([ maps:get(sources, Item, []) || Item <- Items ]),
-  SourceDirUris = lists:flatten([ maps:get(uri, Source, [])
-                                  || Source <- Sources, maps:get(kind, Source, -1) =:= 2
-                                ]),
-  SourceDirs = [ maps:get(path, uri_string:parse(Uri)) || Uri <- SourceDirUris ],
-  AppsPaths = els_config:get(apps_paths),
-  NewAppsPaths = lists:usort(SourceDirs ++ AppsPaths),
-  els_config:set(apps_paths, NewAppsPaths),
+  Uris = lists:flatten([ SourceFun(Source) || Source <- Sources ]),
+  Paths = [ maps:get(path, uri_string:parse(Uri)) || Uri <- Uris ],
+  OldPaths = els_config:get(ConfigKey),
+  ?LOG_INFO("Adding ~p to ~p", [Paths, OldPaths]),
+  NewPaths = lists:usort(OldPaths ++ Paths),
+  els_config:set(ConfigKey, NewPaths),
   els_indexing:start(),
-  State;
-handle_response(Request, Response, State) ->
-  ?LOG_WARNING("Unhandled response. [request=~p] [response=~p]", [Request, Response]),
   State.
 
 -spec check_response(any(), state()) -> {ok, state()} | no_reply.
