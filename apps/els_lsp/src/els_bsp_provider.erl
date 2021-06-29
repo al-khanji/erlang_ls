@@ -116,11 +116,10 @@ handle_sources(ConfigKey, SourceFun, Response, State) ->
   Items = maps:get(items, Result, []),
   Sources = lists:flatten([ maps:get(sources, Item, []) || Item <- Items ]),
   Uris = lists:flatten([ SourceFun(Source) || Source <- Sources ]),
-  Paths = [ maps:get(path, uri_string:parse(Uri)) || Uri <- Uris ],
+  NewPaths = lists:flatten([ maps:get(path, uri_string:parse(Uri), []) || Uri <- Uris ]),
   OldPaths = els_config:get(ConfigKey),
-  ?LOG_INFO("Adding ~p to ~p", [Paths, OldPaths]),
-  NewPaths = lists:usort(OldPaths ++ Paths),
-  els_config:set(ConfigKey, NewPaths),
+  AllPaths = lists:usort([ els_utils:to_list(P) || P <- OldPaths ++ NewPaths]),
+  els_config:set(ConfigKey, AllPaths),
   els_indexing:start(),
   State.
 
