@@ -86,8 +86,19 @@ handle_request({initialized, _Params}, State) ->
   els_distribution_server:start_distribution(NodeName),
   ?LOG_INFO("Started distribution for: [~p]", [NodeName]),
   case els_config:get(bsp_enabled) of
-    true ->  els_bsp_provider:start(RootUri);
-    false -> ok
+    false ->
+      ok;
+    BspEnabled ->
+      BspStatus = els_bsp_provider:start(RootUri),
+      case {BspEnabled, BspStatus} of
+        {_Enabled, {ok, _Config}} ->
+          ok;
+        {true, {error, Reason}}  ->
+          ?LOG_ERROR("Could not start BSP server, aborting. [reason=~p]", [Reason]),
+          els_utils:halt(1);
+        {_Enabled, {error, Reason}} ->
+          ?LOG_WARNING("Failed to start BSP server. [reason=~p]", [Reason])
+      end
   end,
   case maps:get(<<"indexingEnabled">>, InitOptions, true) of
     true  -> els_indexing:start();

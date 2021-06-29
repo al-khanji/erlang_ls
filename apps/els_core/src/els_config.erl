@@ -106,7 +106,7 @@ do_initialize(RootUri, Capabilities, {ConfigPath, Config}) ->
   CodePathExtraDirs = maps:get("code_path_extra_dirs", Config, []),
   ok = add_code_paths(CodePathExtraDirs, RootPath),
   ElvisConfigPath = maps:get("elvis_config_path", Config, undefined),
-  BSPEnabled = maps:get("bsp_enabled", Config, false),
+  BSPEnabled = maps:get("bsp_enabled", Config, auto),
   IncrementalSync = maps:get("incremental_sync", Config, false),
 
   %% Passed by the LSP client
