@@ -51,7 +51,9 @@
                | root_uri
                | search_paths
                | code_reload
-               | elvis_config_path.
+               | elvis_config_path
+               | indexing_enabled
+               | bsp_enabled.
 
 -type path()  :: file:filename().
 -type state() :: #{ apps_dirs        => [path()]
@@ -69,6 +71,8 @@
                   , root_uri         => uri()
                   , search_paths     => [path()]
                   , code_reload      => map() | 'disabled'
+                  , indexing_enabled => boolean()
+                  , bsp_enabled      => boolean() | auto
                   }.
 
 %%==============================================================================

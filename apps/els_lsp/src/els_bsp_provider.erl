@@ -4,6 +4,8 @@
 
 %% API
 -export([ start/1
+        , maybe_start/1
+        , info/1
         , request/2
         ]).
 
@@ -24,9 +26,10 @@
 %%==============================================================================
 %% Types
 %%==============================================================================
--type state() :: #{ running := boolean()          % is the BSP server running?
-                  , root_uri := uri() | undefined % the root uri
-                  , pending := list()             % pending requests
+-type state() :: #{ running          := boolean()         % BSP server running?
+                  , root_uri         := uri() | undefined % the root uri
+                  , pending_requests := list()            % pending requests
+                  , pending_sources  := list()            % pending source info
                   }.
 -type method() :: binary().
 -type params() :: map() | null.
@@ -34,6 +37,7 @@
 -type request_id() :: {reference(), reference(), atom() | pid()}.
 -type from() :: {pid(), reference()} | self.
 -type config() :: map().
+-type info_item() :: is_running.
 
 %%==============================================================================
 %% API
@@ -41,6 +45,24 @@
 -spec start(uri()) -> {ok, config()} | {error, term()}.
 start(RootUri) ->
   els_provider:handle_request(?MODULE, {start, #{ root => RootUri }}).
+
+-spec maybe_start(uri()) -> {ok, config()} | {error, term()} | disabled.
+maybe_start(RootUri) ->
+  case els_config:get(bsp_enabled) of
+    false ->
+      disabled;
+    X when X =:= true orelse X =:= auto ->
+      start(RootUri)
+  end.
+
+-spec info(info_item()) -> any().
+info(Item) ->
+  case els_provider:handle_request(?MODULE, {info, #{ item => Item}}) of
+    {ok, Result} ->
+      Result;
+    {error, badarg} ->
+      erlang:error(badarg, [Item])
+  end.
 
 -spec request(method(), params()) -> request_response().
 request(Method, Params) ->
@@ -74,9 +96,10 @@ wait_response({Ref, Mon, ServerRef}, Timeout) ->
 %%==============================================================================
 -spec init() -> state().
 init() ->
-  #{ running  => false
-   , root_uri => undefined
-   , pending  => []
+  #{ running          => false
+   , root_uri         => undefined
+   , pending_requests => []
+   , pending_sources  => [ apps_paths, deps_paths ]
    }.
 
 -spec is_enabled() -> true.
@@ -87,7 +110,9 @@ is_enabled() -> true.
                     ({send_request, #{ from := from()
                                      , method := method()
                                      , params  := params() }}, state())
-                    -> {ok, state()}.
+                    -> {ok, state()};
+                    ({info, info_item()}, state())
+                    -> {{ok, any()}, state()} | {{error, badarg}, state()}.
 handle_request({start, #{ root := RootUri }}, #{ running := false } = State) ->
   ?LOG_INFO("Starting BSP server in ~p", [RootUri]),
   case els_bsp_client:start_server(RootUri) of
@@ -107,6 +132,13 @@ handle_request({send_request, #{ from := From
       {ok, State};
     #{ running := true } ->
       {ok, request(From, Method, Params, State)}
+  end;
+handle_request({info, #{ item := Item }}, State) ->
+  case Item of
+    is_running ->
+      {{ok, maps:get(running, State)}, State};
+    _ ->
+      {{error, badarg}, State}
   end.
 
 -spec handle_info(any(), state()) -> state().
@@ -140,9 +172,10 @@ request(Method, Params, State) ->
   request(self, Method, Params, State).
 
 -spec request(from(), method(), params(), state()) -> state().
-request(From, Method, Params, #{ pending := Pending } = State) ->
+request(From, Method, Params, #{ pending_requests := Pending } = State) ->
   RequestId = els_bsp_client:request(Method, Params),
-  State#{ pending => [{RequestId, From, {Method, Params}} | Pending] }.
+  PendingRequest = {RequestId, From, {Method, Params}},
+  State#{ pending_requests => [PendingRequest | Pending] }.
 
 -spec handle_response({binary(), any()}, any(), state()) -> state().
 handle_response({<<"build/initialize">>, _}, Response, State) ->
@@ -183,11 +216,17 @@ handle_sources(ConfigKey, SourceFun, Response, State) ->
   OldPaths = els_config:get(ConfigKey),
   AllPaths = lists:usort([ els_utils:to_list(P) || P <- OldPaths ++ NewPaths]),
   els_config:set(ConfigKey, AllPaths),
-  els_indexing:start(),
-  State.
+  PendingSources = maps:get(pending_sources, State) -- [ConfigKey],
+  case PendingSources of
+    [] ->
+      els_indexing:maybe_start();
+    _ ->
+      ok
+  end,
+  State#{ pending_sources => PendingSources }.
 
 -spec check_response(any(), state()) -> {ok, state()} | no_reply.
-check_response(Msg, #{ pending := Pending } = State) ->
+check_response(Msg, #{ pending_requests := Pending } = State) ->
   F = fun({RequestId, From, Request}) ->
           case els_bsp_client:check_response(Msg, RequestId) of
             no_reply ->
@@ -205,7 +244,7 @@ check_response(Msg, #{ pending := Pending } = State) ->
       no_reply;
     {Left, [{RequestId, From, Request} | Right]} ->
       Result = els_bsp_client:check_response(Msg, RequestId),
-      NewState = State#{ pending => Left ++ Right },
+      NewState = State#{ pending_requests => Left ++ Right },
       case {From, Result} of
         {self, {reply, Reply}} ->
           {ok, handle_response(Request, Reply, NewState)};
