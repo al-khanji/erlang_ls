@@ -48,9 +48,9 @@
 %%==============================================================================
 %% Record Definitions
 %%==============================================================================
--record(state, { request_id = 1 :: request_id()
-               , pending    = [] :: [pending_request()]
-               , port       :: port() | 'undefined'
+-record(state, { request_id = 1    :: request_id()
+               , pending    = []   :: [pending_request()]
+               , port              :: port() | 'undefined'
                , buffer     = <<>> :: binary()
                }).
 
