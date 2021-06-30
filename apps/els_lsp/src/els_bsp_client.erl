@@ -74,24 +74,27 @@
 %% Remove whenever only OTP >= 23 is supported.
 %%==============================================================================
 -type server_ref() :: atom() | pid().
+
+-if(?OTP_RELEASE >= 23).
 -spec do_send_request(server_ref(), any()) -> any().
+do_send_request(ServerRef, Request) ->
+  gen_server:send_request(ServerRef, Request).
+
 -spec do_wait_response(any(), timeout()) ->
         {reply, any()} |
         timeout |
         {error, {any(), server_ref()}}.
+do_wait_response(RequestId, Timeout) ->
+  gen_server:wait_response(RequestId, Timeout).
+
 -spec do_check_response(any(), any()) ->
         {reply, any()} |
         no_reply |
         {error, {any(), server_ref()}}.
-
--if(?OTP_RELEASE >= 23).
-do_send_request(ServerRef, Request) ->
-  gen_server:send_request(ServerRef, Request).
-do_wait_response(RequestId, Timeout) ->
-  gen_server:wait_response(RequestId, Timeout).
 do_check_response(Msg, RequestId) ->
   gen_server:check_response(Msg, RequestId).
 -else.
+-spec do_send_request(server_ref(), any()) -> any().
 do_send_request(ServerRef, Request) ->
   Self = self(),
   Ref = erlang:make_ref(),
@@ -101,6 +104,11 @@ do_send_request(ServerRef, Request) ->
       end,
   {Pid, Mon} = erlang:spawn_monitor(F),
   {Pid, Mon, Ref, ServerRef}.
+
+-spec do_wait_response(any(), timeout()) ->
+        {reply, any()} |
+        timeout |
+        {error, {any(), server_ref()}}.
 do_wait_response({_Pid, Mon, Ref, ServerRef}, Timeout) ->
   receive
     {Ref, Result} ->
@@ -111,6 +119,11 @@ do_wait_response({_Pid, Mon, Ref, ServerRef}, Timeout) ->
   after Timeout ->
       timeout
   end.
+
+-spec do_check_response(any(), any()) ->
+        {reply, any()} |
+        no_reply |
+        {error, {any(), server_ref()}}.
 do_check_response(Msg, {_Pid, Mon, Ref, ServerRef}) ->
   case Msg of
     {Ref, Result} ->
