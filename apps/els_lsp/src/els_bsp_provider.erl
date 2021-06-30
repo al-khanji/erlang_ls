@@ -53,24 +53,12 @@ handle_request({start, RootUri}, #{ running := false } = State) ->
   case els_bsp_client:start_server(RootUri) of
     {ok, Config} ->
       ?LOG_INFO("BSP server started from config ~p", [Config]),
-      enqueue(initialize_bsp),
-      {{ok, Config}, State#{ running => true, root_uri => RootUri }};
+      {{ok, Config}, initialize_bsp(RootUri, State)};
     {error, Reason} ->
       ?LOG_ERROR("BSP server startup failed: ~p", [Reason]),
       {{error, Reason}, State}
   end.
 
--spec handle_info(initialize_bsp, state()) -> state().
-handle_info(initialize_bsp, #{ running := true, root_uri := Root } = State) ->
-  {ok, Vsn} = application:get_key(els_lsp, vsn),
-  Params = #{ <<"displayName">>  => <<"Erlang LS BSP Client">>
-            , <<"version">>      => list_to_binary(Vsn)
-            , <<"bspVersion">>   => <<"2.0.0">>
-            , <<"rootUri">>      => Root
-            , <<"capabilities">> => #{ <<"languageIds">> => [<<"erlang">>] }
-            , <<"data">>         => #{}
-            },
-  request(<<"build/initialize">>, Params, State);
 handle_info({request_finished, Request, Response}, State) ->
   handle_response(Request, Response, State);
 handle_info(Msg, State) ->
@@ -87,6 +75,19 @@ handle_info(Msg, State) ->
 %%==============================================================================
 -spec request(binary(), map() | null, state()) -> state().
 request(Method, Params, #{ pending := Pending } = State) ->
+-spec initialize_bsp(uri(), state()) -> state().
+initialize_bsp(Root, State) ->
+  {ok, Vsn} = application:get_key(els_lsp, vsn),
+  Params = #{ <<"displayName">>  => <<"Erlang LS BSP Client">>
+            , <<"version">>      => list_to_binary(Vsn)
+            , <<"bspVersion">>   => <<"2.0.0">>
+            , <<"rootUri">>      => Root
+            , <<"capabilities">> => #{ <<"languageIds">> => [<<"erlang">>] }
+            , <<"data">>         => #{}
+            },
+  request(<<"build/initialize">>, Params, State#{ running => true
+                                                , root_uri => Root }).
+
   RequestId = els_bsp_client:request(Method, Params),
   State#{ pending => [{RequestId, {Method, Params}} | Pending] }.
 
