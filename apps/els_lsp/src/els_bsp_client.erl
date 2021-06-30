@@ -233,7 +233,7 @@ terminate(_Reason, #state{port = Port} = _State) ->
 -spec find_config(els_uri:path()) -> map() | undefined.
 find_config(RootDir) ->
   Wildcard = filename:join([RootDir, ?BSP_CONF_DIR, ?BSP_WILDCARD]),
-  Candidates = filelib:wildcard(Wildcard),
+  Candidates = filelib:wildcard(els_utils:to_list(Wildcard)),
   choose_config(Candidates).
 
 -spec choose_config([file:filename()]) -> map() | undefined.
@@ -243,12 +243,7 @@ choose_config([F|Fs]) ->
   try
     {ok, Content} = file:read_file(F),
     Config = jsx:decode(Content, [return_maps, {labels, atom}]),
-    Languages = case Config of
-                  #{ languages := L } ->
-                    L;
-                  _ ->
-                    []
-                end,
+    Languages = maps:get(languages, Config),
     case lists:member(<<"erlang">>, Languages) of
       true ->
         Config;
@@ -256,7 +251,10 @@ choose_config([F|Fs]) ->
         choose_config(Fs)
     end
   catch
-    _:_ ->
+    C:E:S ->
+      ?LOG_ERROR( "Bad BSP config file. [file=~p] [error=~p]"
+                , [F, {C, E, S}]
+                ),
       choose_config(Fs)
   end.
 
