@@ -94,7 +94,8 @@ handle_request({initialized, _Params}, State) ->
         {_Enabled, {ok, _Config}} ->
           ok;
         {true, {error, Reason}}  ->
-          ?LOG_ERROR("Could not start BSP server, aborting. [reason=~p]", [Reason]),
+          ?LOG_ERROR("Could not start BSP server, aborting. [reason=~p]",
+                     [Reason]),
           els_utils:halt(1);
         {_Enabled, {error, Reason}} ->
           ?LOG_WARNING("Failed to start BSP server. [reason=~p]", [Reason])

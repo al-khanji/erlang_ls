@@ -61,12 +61,12 @@ handle_request({start, RootUri}, #{ running := false } = State) ->
   end.
 
 -spec handle_info(initialize_bsp, state()) -> state().
-handle_info(initialize_bsp, #{ running := true, root_uri := RootUri } = State) ->
+handle_info(initialize_bsp, #{ running := true, root_uri := Root } = State) ->
   {ok, Vsn} = application:get_key(els_lsp, vsn),
   Params = #{ <<"displayName">>  => <<"Erlang LS BSP Client">>
             , <<"version">>      => list_to_binary(Vsn)
             , <<"bspVersion">>   => <<"2.0.0">>
-            , <<"rootUri">>      => RootUri
+            , <<"rootUri">>      => Root
             , <<"capabilities">> => #{ <<"languageIds">> => [<<"erlang">>] }
             , <<"data">>         => #{}
             },
@@ -91,23 +91,31 @@ request(Method, Params, #{ pending := Pending } = State) ->
   State#{ pending => [{RequestId, {Method, Params}} | Pending] }.
 
 -spec handle_response({binary(), any()}, any(), state()) -> state().
-handle_response({<<"build/initialize">>, _Params}, Response, State) ->
+handle_response({<<"build/initialize">>, _}, Response, State) ->
   ?LOG_INFO("BSP Server initialized: ~p", [Response]),
   ok = els_bsp_client:notification(<<"build/initialized">>),
   request(<<"workspace/buildTargets">>, #{}, State);
-handle_response({<<"workspace/buildTargets">>, _Params}, Response, State0) ->
+handle_response({<<"workspace/buildTargets">>, _}, Response, State0) ->
   Result = maps:get(result, Response, #{}),
   Targets = maps:get(targets, Result, []),
   TargetIds = lists:flatten([ maps:get(id, Target, []) || Target <- Targets ]),
-  State1 = request(<<"buildTarget/sources">>, #{ <<"targets">> => TargetIds }, State0),
-  State2 = request(<<"buildTarget/dependencySources">>, #{ <<"targets">> => TargetIds }, State1),
+  Params = #{ <<"targets">> => TargetIds },
+  State1 = request(<<"buildTarget/sources">>, Params, State0),
+  State2 = request(<<"buildTarget/dependencySources">>, Params, State1),
   State2;
-handle_response({<<"buildTarget/sources">>, _Params}, Response, State) ->
-  handle_sources(apps_paths, fun(Source) -> maps:get(uri, Source, []) end, Response, State);
-handle_response({<<"buildTarget/dependencySources">>, _Params}, Response, State) ->
-  handle_sources(deps_paths, fun(Source) -> Source end, Response, State);
+handle_response({<<"buildTarget/sources">>, _}, Response, State) ->
+  handle_sources(apps_paths,
+                 fun(Source) -> maps:get(uri, Source, []) end,
+                 Response,
+                 State);
+handle_response({<<"buildTarget/dependencySources">>, _}, Response, State) ->
+  handle_sources(deps_paths,
+                 fun(Source) -> Source end,
+                 Response,
+                 State);
 handle_response(Request, Response, State) ->
-  ?LOG_WARNING("Unhandled response. [request=~p] [response=~p]", [Request, Response]),
+  ?LOG_WARNING("Unhandled response. [request=~p] [response=~p]",
+               [Request, Response]),
   State.
 
 -spec handle_sources(atom(), fun((any()) -> uri()), map(), state()) -> state().
@@ -116,7 +124,8 @@ handle_sources(ConfigKey, SourceFun, Response, State) ->
   Items = maps:get(items, Result, []),
   Sources = lists:flatten([ maps:get(sources, Item, []) || Item <- Items ]),
   Uris = lists:flatten([ SourceFun(Source) || Source <- Sources ]),
-  NewPaths = lists:flatten([ maps:get(path, uri_string:parse(Uri), []) || Uri <- Uris ]),
+  UriMaps = [ uri_string:parse(Uri) || Uri <- Uris ],
+  NewPaths = lists:flatten([ maps:get(path, UM, []) || UM <- UriMaps ]),
   OldPaths = els_config:get(ConfigKey),
   AllPaths = lists:usort([ els_utils:to_list(P) || P <- OldPaths ++ NewPaths]),
   els_config:set(ConfigKey, AllPaths),

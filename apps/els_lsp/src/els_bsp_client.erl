@@ -95,11 +95,13 @@ request(Method) ->
 request(Method, Params) ->
   gen_server:send_request(?SERVER, {request, Method, Params}).
 
--spec wait_response(any(), timeout()) -> {reply, any()} | timeout | {error, {any(), any()}}.
+-spec wait_response(any(), timeout()) ->
+        {reply, any()} | timeout | {error, {any(), any()}}.
 wait_response(RequestId, Timeout) ->
   gen_server:wait_response(RequestId, Timeout).
 
--spec check_response(any(), any()) -> {reply, any()} | no_reply | {error, {any(), any()}}.
+-spec check_response(any(), any()) ->
+        {reply, any()} | no_reply | {error, {any(), any()}}.
 check_response(Msg, RequestId) ->
   gen_server:check_response(Msg, RequestId).
 
