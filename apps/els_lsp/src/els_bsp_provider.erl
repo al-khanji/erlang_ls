@@ -3,7 +3,9 @@
 -behaviour(els_provider).
 
 %% API
--export([ start/1 ]).
+-export([ start/1
+        , request/2
+        ]).
 
 %% els_provider functions
 -export([ is_enabled/0
@@ -26,13 +28,47 @@
                   , root_uri := uri() | undefined % the root uri
                   , pending := list()             % pending requests
                   }.
+-type method() :: binary().
+-type params() :: map() | null.
+-type request_response() :: {reply, any()} | {error, any()}.
+-type request_id() :: {reference(), reference(), atom() | pid()}.
+-type from() :: {pid(), reference()} | self.
+-type config() :: map().
 
 %%==============================================================================
 %% API
 %%==============================================================================
--spec start(uri()) -> ok | {error, term()}.
+-spec start(uri()) -> {ok, config()} | {error, term()}.
 start(RootUri) ->
-  els_provider:handle_request(?MODULE, {start, RootUri}).
+  els_provider:handle_request(?MODULE, {start, #{ root => RootUri }}).
+
+-spec request(method(), params()) -> request_response().
+request(Method, Params) ->
+  RequestId = send_request(Method, Params),
+  wait_response(RequestId, infinity).
+
+-spec send_request(method(), params()) -> request_id().
+send_request(Method, Params) ->
+  Mon = erlang:monitor(process, ?MODULE),
+  Ref = erlang:make_ref(),
+  From = {self(), Ref},
+  els_provider:handle_request(?MODULE, {send_request, #{ from => From
+                                                       , method => Method
+                                                       , params => Params }}),
+  {Ref, Mon, ?MODULE}.
+
+-spec wait_response(request_id(), timeout()) -> request_response() | timeout.
+wait_response({Ref, Mon, ServerRef}, Timeout) ->
+  receive
+    {Ref, Response} ->
+      erlang:demonitor(Mon, [flush]),
+      Response;
+    {'DOWN', Mon,  _Type, _Object, Info} ->
+      erlang:demonitor(Mon, [flush]),
+      {error, {Info, ServerRef}}
+  after Timeout ->
+      timeout
+  end.
 
 %%==============================================================================
 %% els_provider functions
@@ -47,8 +83,13 @@ init() ->
 -spec is_enabled() -> true.
 is_enabled() -> true.
 
--spec handle_request({start, uri()}, state()) -> {ok, state()}.
-handle_request({start, RootUri}, #{ running := false } = State) ->
+-spec handle_request({start, #{ root := uri() }}, state())
+                    -> {{ok, config()}, state()} | {{error, any()}, state()};
+                    ({send_request, #{ from := from()
+                                     , method := method()
+                                     , params  := params() }}, state())
+                    -> {ok, state()}.
+handle_request({start, #{ root := RootUri }}, #{ running := false } = State) ->
   ?LOG_INFO("Starting BSP server in ~p", [RootUri]),
   case els_bsp_client:start_server(RootUri) of
     {ok, Config} ->
@@ -57,10 +98,13 @@ handle_request({start, RootUri}, #{ running := false } = State) ->
     {error, Reason} ->
       ?LOG_ERROR("BSP server startup failed: ~p", [Reason]),
       {{error, Reason}, State}
-  end.
+  end;
+handle_request({send_request, #{ from := From
+                               , method := Method
+                               , params := Params }}, State) ->
+  {ok, request(From, Method, Params, State)}.
 
-handle_info({request_finished, Request, Response}, State) ->
-  handle_response(Request, Response, State);
+-spec handle_info(any(), state()) -> state().
 handle_info(Msg, State) ->
   case check_response(Msg, State) of
     {ok, NewState} ->
@@ -73,8 +117,6 @@ handle_info(Msg, State) ->
 %%==============================================================================
 %% Internal functions
 %%==============================================================================
--spec request(binary(), map() | null, state()) -> state().
-request(Method, Params, #{ pending := Pending } = State) ->
 -spec initialize_bsp(uri(), state()) -> state().
 initialize_bsp(Root, State) ->
   {ok, Vsn} = application:get_key(els_lsp, vsn),
@@ -88,8 +130,14 @@ initialize_bsp(Root, State) ->
   request(<<"build/initialize">>, Params, State#{ running => true
                                                 , root_uri => Root }).
 
+-spec request(method(), params(), state()) -> state().
+request(Method, Params, State) ->
+  request(self, Method, Params, State).
+
+-spec request(from(), method(), params(), state()) -> state().
+request(From, Method, Params, #{ pending := Pending } = State) ->
   RequestId = els_bsp_client:request(Method, Params),
-  State#{ pending => [{RequestId, {Method, Params}} | Pending] }.
+  State#{ pending => [{RequestId, From, {Method, Params}} | Pending] }.
 
 -spec handle_response({binary(), any()}, any(), state()) -> state().
 handle_response({<<"build/initialize">>, _}, Response, State) ->
@@ -135,23 +183,31 @@ handle_sources(ConfigKey, SourceFun, Response, State) ->
 
 -spec check_response(any(), state()) -> {ok, state()} | no_reply.
 check_response(Msg, #{ pending := Pending } = State) ->
-  F = fun({RequestId, Request}) ->
+  F = fun({RequestId, From, Request}) ->
           case els_bsp_client:check_response(Msg, RequestId) of
-            {reply, Reply} ->
-              enqueue({request_finished, Request, Reply}),
+            no_reply ->
+              true;
+            {reply, _Reply} ->
               false;
-            _ ->
-              true
+            {error, Reason} ->
+              ?LOG_ERROR("BSP request error. [from=~p] [request~p] [error=~p]",
+                         [From, Request, Reason]),
+              false
           end
       end,
   case lists:splitwith(F, Pending) of
     {_, []} ->
       no_reply;
-    {Left, [_Matched | Right]} ->
-      {ok, State#{ pending => Left ++ Right }}
+    {Left, [{RequestId, From, Request} | Right]} ->
+      Result = els_bsp_client:check_response(Msg, RequestId),
+      NewState = State#{ pending => Left ++ Right },
+      case {From, Result} of
+        {{Pid, Ref}, Result} ->
+          try Pid ! {Ref, Result} catch _:_ -> ok end,
+          {ok, NewState};
+        {self, {reply, Reply}} ->
+          {ok, handle_response(Request, Reply, NewState)};
+        {self, {error, _Reason}} ->
+          {ok, NewState}
+      end
   end.
-
--spec enqueue(any()) -> ok.
-enqueue(Msg) ->
-  self() ! Msg,
-  ok.
