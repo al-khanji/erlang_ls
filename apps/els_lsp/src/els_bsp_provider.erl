@@ -52,9 +52,8 @@ send_request(Method, Params) ->
   Mon = erlang:monitor(process, ?MODULE),
   Ref = erlang:make_ref(),
   From = {self(), Ref},
-  els_provider:handle_request(?MODULE, {send_request, #{ from => From
-                                                       , method => Method
-                                                       , params => Params }}),
+  Request = #{ from => From, method => Method, params => Params },
+  ok = els_provider:handle_request(?MODULE, {send_request, Request}),
   {Ref, Mon, ?MODULE}.
 
 -spec wait_response(request_id(), timeout()) -> request_response() | timeout.
@@ -102,7 +101,13 @@ handle_request({start, #{ root := RootUri }}, #{ running := false } = State) ->
 handle_request({send_request, #{ from := From
                                , method := Method
                                , params := Params }}, State) ->
-  {ok, request(From, Method, Params, State)}.
+  case State of
+    #{ running := false } ->
+      reply_request(From, {error, not_running}),
+      {ok, State};
+    #{ running := true } ->
+      {ok, request(From, Method, Params, State)}
+  end.
 
 -spec handle_info(any(), state()) -> state().
 handle_info(Msg, State) ->
@@ -202,12 +207,17 @@ check_response(Msg, #{ pending := Pending } = State) ->
       Result = els_bsp_client:check_response(Msg, RequestId),
       NewState = State#{ pending => Left ++ Right },
       case {From, Result} of
-        {{Pid, Ref}, Result} ->
-          try Pid ! {Ref, Result} catch _:_ -> ok end,
-          {ok, NewState};
         {self, {reply, Reply}} ->
           {ok, handle_response(Request, Reply, NewState)};
         {self, {error, _Reason}} ->
+          {ok, NewState};
+        {From, Result} ->
+          ok = reply_request(From, Result),
           {ok, NewState}
       end
   end.
+
+-spec reply_request(from(), any()) -> ok.
+reply_request({Pid, Ref}, Result) ->
+  try Pid ! {Ref, Result} catch _:_ -> ok end,
+  ok.
