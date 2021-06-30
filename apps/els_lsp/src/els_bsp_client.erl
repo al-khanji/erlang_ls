@@ -130,7 +130,7 @@ do_check_response(Msg, {_Pid, Mon, Ref, ServerRef}) ->
 start_link() ->
   gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
--spec start_server(uri()) -> ok.
+-spec start_server(uri()) -> {ok, map()} | {error, any()}.
 start_server(RootUri) ->
   gen_server:call(?SERVER, {start_server, RootUri}).
 
@@ -175,7 +175,7 @@ init([]) ->
 -spec handle_call(any(), any() , state()) ->
         {noreply, state()} | {reply, any(), state()}.
 handle_call({start_server, RootUri}, _From, State) ->
-  RootPath = binary_to_list(els_uri:path(RootUri)),
+  RootPath = els_uri:path(RootUri),
   case find_config(RootPath) of
     undefined ->
       {reply, {error, noconfig}, State};
@@ -230,7 +230,7 @@ terminate(_Reason, #state{port = Port} = _State) ->
 %%==============================================================================
 %% Internal Functions
 %%==============================================================================
--spec find_config(uri()) -> map() | undefined.
+-spec find_config(els_uri:path()) -> map() | undefined.
 find_config(RootDir) ->
   Wildcard = filename:join([RootDir, ?BSP_CONF_DIR, ?BSP_WILDCARD]),
   Candidates = filelib:wildcard(Wildcard),
