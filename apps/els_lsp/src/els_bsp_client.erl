@@ -178,6 +178,7 @@ handle_call({start_server, RootUri}, _From, State) ->
   RootPath = els_uri:path(RootUri),
   case find_config(RootPath) of
     undefined ->
+      ?LOG_INFO("Found no BSP configuration. [root=~p]", [RootPath]),
       {reply, {error, noconfig}, State};
     #{ argv := [Cmd|Params] } = Config ->
       Executable = os:find_executable(binary_to_list(Cmd)),
