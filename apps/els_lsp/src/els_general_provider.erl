@@ -91,14 +91,14 @@ handle_request({initialized, _Params}, State) ->
     BspEnabled ->
       BspStatus = els_bsp_provider:start(RootUri),
       case {BspEnabled, BspStatus} of
-        {_Enabled, {ok, _Config}} ->
+        {_, {ok, _Config}} ->
           ok;
         {true, {error, Reason}}  ->
           ?LOG_ERROR("Could not start BSP server, aborting. [reason=~p]",
                      [Reason]),
           els_utils:halt(1);
-        {_Enabled, {error, Reason}} ->
-          ?LOG_WARNING("Failed to start BSP server. [reason=~p]", [Reason])
+        {auto, {error, Reason}} ->
+          ?LOG_INFO("Failed to start BSP server. [reason=~p]", [Reason])
       end
   end,
   case maps:get(<<"indexingEnabled">>, InitOptions, true) of
