@@ -121,7 +121,10 @@ format_document_bsp(Dir, RelativePath, _Options) ->
     case els_bsp_provider:request(Method, Params) of
       {error, Reason} ->
         error(Reason);
-      _ ->
+      {reply, #{ error := _Error } = Result} ->
+        error(Result);
+      {reply, Result} ->
+        ?LOG_DEBUG("BSP format succeeded. [result=~p]", [Result]),
         true
     end
   catch
