@@ -64,6 +64,65 @@
 -type pending_request() :: [{request_id(), from()}].
 -type from()            :: {pid(), any()}.
 
+
+%%==============================================================================
+%% Compat Stuff
+%% Since the build server can take arbitrary amounts of time to process things
+%% we really would like to use gen_server:send_request et co that are added in
+%% OTP 23, but we also need to support older OTP versions for now - implement
+%% rudimentary scaffolding to fake the new functionality.
+%% Remove whenever only OTP >= 23 is supported.
+%%==============================================================================
+-type server_ref() :: atom() | pid().
+-spec do_send_request(server_ref(), any()) -> any().
+-spec do_wait_response(any(), timeout()) ->
+        {reply, any()} |
+        timeout |
+        {error, {any(), server_ref()}}.
+-spec do_check_response(any(), any()) ->
+        {reply, any()} |
+        no_reply |
+        {error, {any(), server_ref()}}.
+
+-if(?OTP_RELEASE >= 23).
+do_send_request(ServerRef, Request) ->
+  gen_server:send_request(ServerRef, Request).
+do_wait_response(RequestId, Timeout) ->
+  gen_server:wait_response(RequestId, Timeout).
+do_check_response(Msg, RequestId) ->
+  gen_server:check_response(Msg, RequestId).
+-else.
+do_send_request(ServerRef, Request) ->
+  Self = self(),
+  Ref = erlang:make_ref(),
+  F = fun() ->
+          Result = gen_server:call(ServerRef, Request, infinity),
+          try Self ! {Ref, Result} catch _:_ -> ok end
+      end,
+  {Pid, Mon} = erlang:spawn_monitor(F),
+  {Pid, Mon, Ref, ServerRef}.
+do_wait_response({_Pid, Mon, Ref, ServerRef}, Timeout) ->
+  receive
+    {Ref, Result} ->
+      erlang:demonitor(Mon, [flush]),
+      {reply, Result};
+    {'DOWN', Mon, _Type, _Object, Info} ->
+      {error, {Info, ServerRef}}
+  after Timeout ->
+      timeout
+  end.
+do_check_response(Msg, {_Pid, Mon, Ref, ServerRef}) ->
+  case Msg of
+    {Ref, Result} ->
+      erlang:demonitor(Mon, [flush]),
+      {reply, Result};
+    {'DOWN', Mon, _Type, _Object, Info} ->
+      {error, {Info, ServerRef}};
+    _ ->
+      no_reply
+  end.
+-endif.
+
 %%==============================================================================
 %% API
 %%==============================================================================
@@ -93,17 +152,17 @@ request(Method) ->
 
 -spec request(method(), params()) -> any().
 request(Method, Params) ->
-  gen_server:send_request(?SERVER, {request, Method, Params}).
+  do_send_request(?SERVER, {request, Method, Params}).
 
 -spec wait_response(any(), timeout()) ->
         {reply, any()} | timeout | {error, {any(), any()}}.
 wait_response(RequestId, Timeout) ->
-  gen_server:wait_response(RequestId, Timeout).
+  do_wait_response(RequestId, Timeout).
 
 -spec check_response(any(), any()) ->
         {reply, any()} | no_reply | {error, {any(), any()}}.
 check_response(Msg, RequestId) ->
-  gen_server:check_response(Msg, RequestId).
+  do_check_response(Msg, RequestId).
 
 %%==============================================================================
 %% gen_server Callback Functions
